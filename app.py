@@ -3,10 +3,15 @@
 
 # Streamlit front-end for the C FASTR™ report generator.
 # Restores full consultant inputs (Title page, Exec Summary, Conclusion),
-# writes them to consultant_inputs.json in the schema your generator expects,
+# writes them to consultant_inputs.json in the schema the generator expects,
 # runs generate_client_report_PATCHED.py, and offers a properly named download.
 
-import os, sys, json, subprocess, datetime, re
+import os
+import sys
+import json
+import subprocess
+import datetime
+import re
 import streamlit as st
 
 # ---------- Files your generator expects (leave as-is unless you change the script) ----------
@@ -90,7 +95,7 @@ errors = []
 if not (company_name or "").strip():
     errors.append("Please enter a Company Name.")
 if errors:
-    st.error("\n".join(errors))
+    st.error("\\n".join(errors))
     st.stop()
 
 # ---------- Verify required on-disk files before running ----------
@@ -98,11 +103,11 @@ missing = [p for p in (SURVEY_CSV, MAPPING_CSV, THRESHOLDS_CSV, TEMPLATE_DOCX, S
 if missing:
     st.error(
         "These required files are missing on the server (next to `app.py`). "
-        "Add them and try again:\n\n" + "\n".join(f"- {m}" for m in missing)
+        "Add them and try again:\\n\\n" + "\\n".join(f"- {m}" for m in missing)
     )
     st.stop()
 
-# ---------- Write consultant_inputs.json in the schema your generator expects ----------
+# ---------- Write consultant_inputs.json in the expected schema ----------
 payload = {
     "title_page": {
         "company_name": (company_name or "").strip(),
@@ -124,7 +129,6 @@ payload = {
         "metrics_quarterly": (conc_metrics_quarterly or "").strip(),
         "closing_thoughts": (conc_closing_thoughts or "").strip(),
     },
-    # Extra meta fields are harmless; generator ignores them if not used.
     "meta": {
         "generated_at": datetime.datetime.now().isoformat(),
         "app_version": "ui-restore-1",
