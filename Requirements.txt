@@ -9,6 +9,7 @@ Pillow>=10.3,<11.0   # images/logos inside PPTX
 
 # ---- Optional (uncomment if you use) ----
 # plotly>=5.22,<6.0      # interactive charts
-# matplotlib>=3.8,<4.0    # static charts
+matplotlib>=3.8,<4.0    # static charts
+python-docx>=1.1,<2.0     # add this if your generator writes .docx
 # openpyxl>=3.1,<4.0      # read/write Excel files
 # python-dotenv>=1.0,<2.0 # load local .env during dev
