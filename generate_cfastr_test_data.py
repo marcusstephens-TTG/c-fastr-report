@@ -8,7 +8,7 @@ CFastR test data generator that respects your official mapping:
 - Lets you choose row count, company name, and per-category profiles
   (terrific / mixed / poor) for: Collusion, Feedback, Accountability,
   Sensitivity, Trust, Relationship.
-- Produces **CFastR_Survey_Test_Data.csv** by default with columns:
+- Produces CFastR_Survey_Test_Data.csv with columns:
   ["Title", "Business Function", <every 'Question Number' from the mapping in order>]
 
 Run as a Streamlit UI:
@@ -38,7 +38,7 @@ import pandas as pd
 
 # ---- Files/columns ----
 MAPPING_PATH = "CFASTR_Category_Mapping_V1.csv"
-DEFAULT_OUT = "CFastR_Survey_Test_Data.csv"  # <- new default name
+DEFAULT_OUT = "CFastR_Survey_Test_Data.csv"  # default output name
 
 TITLE_COL = "Title"
 FUNC_COL  = "Business Function"
@@ -274,16 +274,24 @@ def _run_streamlit():
         st.download_button(
             "⬇️ Download CFastR_Survey_Test_Data.csv",
             data=df.to_csv(index=False).encode("utf-8"),
-            file_name="CFastR_Survey_Test_Data.csv",  # <- new name in UI download
+            file_name="CFastR_Survey_Test_Data.csv",
             mime="text/csv",
         )
 
 
 # ---------------- Entry point ----------------
 
+def _running_in_streamlit() -> bool:
+    """Reliable detection for Streamlit Cloud & local 'streamlit run'."""
+    try:
+        from streamlit.runtime.scriptrunner import get_script_run_ctx
+        return get_script_run_ctx() is not None
+    except Exception:
+        return False
+
+
 if __name__ == "__main__":
-    # If launched via Streamlit, runtime usually sets STREAMLIT_RUNTIME=1
-    if os.environ.get("STREAMLIT_RUNTIME") == "1" or "STREAMLIT_SERVER_ENABLED" in os.environ:
+    if _running_in_streamlit():
         _run_streamlit()
     else:
         main_cli()
