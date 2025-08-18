@@ -2,6 +2,8 @@
 streamlit>=1.36,<2.0
 pandas>=2.2,<3.0
 numpy>=1.26,<2.0
+matplotlib>=3.8,<4.0    # static charts
+python-docx>=1.1,<2.0     # add this if your generator writes .docx
 
 # PowerPoint report generation
 python-pptx>=1.0.2,<1.1
@@ -9,7 +11,6 @@ Pillow>=10.3,<11.0   # images/logos inside PPTX
 
 # ---- Optional (uncomment if you use) ----
 # plotly>=5.22,<6.0      # interactive charts
-matplotlib>=3.8,<4.0    # static charts
-python-docx>=1.1,<2.0     # add this if your generator writes .docx
+# matplotlib>=3.8,<4.0    # static charts
 # openpyxl>=3.1,<4.0      # read/write Excel files
 # python-dotenv>=1.0,<2.0 # load local .env during dev
