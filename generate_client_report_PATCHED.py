@@ -1,19 +1,13 @@
 # generate_client_report_PATCHED.py
 # ---------------------------------
 # CONSISTENT per-function colors across ALL charts + visible debug stamp.
-# The column for functions is exactly: "Business Function".
-#
-# Debug behavior:
-# - A small "CF-DEBUG v0.3" stamp is drawn on every chart (bottom-right),
-#   showing that THIS file ran at color-assignment time.
-# - A short mapping summary is appended to CF_COLOR_DEBUG.txt.
-# To turn the overlay off later, set environment var CFASTR_DEBUG=0.
+# Column used for functions: "Business Function".
 
 from __future__ import annotations
 
 import io
 import os
-from typing import Dict, Iterable, List, Sequence, Tuple
+from typing import Dict, List, Sequence, Tuple
 
 import matplotlib
 matplotlib.use("Agg")  # headless backend for servers/Streamlit
@@ -27,10 +21,9 @@ DEBUG_OVERLAY = os.getenv("CFASTR_DEBUG", "1") == "1"  # default ON so you can s
 DEBUG_FILE = "CF_COLOR_DEBUG.txt"
 
 # ========= CONFIG =========
-# Column holding business function labels:
 FUNC_COL = "Business Function"
 
-# Distinct, readable palette (will repeat if you have more functions than colors)
+# Distinct, readable palette (repeats if you have more functions than colors)
 PALETTE: List[str] = [
     "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd",
     "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf",
@@ -74,7 +67,6 @@ def _ensure_colors_for(labels: List[str]) -> None:
     for i, lab in enumerate(new_labels):
         FUNCTION_COLOR[lab] = palette[start_idx + i]
 
-    # Debug output: first few mappings
     sample = ", ".join(f"{lab}→{FUNCTION_COLOR[lab]}" for lab in new_labels[:5])
     _log_debug_line(f"{__version__}: assigned colors for {len(new_labels)} new functions | {sample}")
 
@@ -96,15 +88,13 @@ def _prep_series_for_plot(
     return labels, values
 
 def _annotate_debug(ax, labels: List[str], colors: List[str]) -> None:
-    """Draw a small visible stamp proving this code ran at color time."""
     if not DEBUG_OVERLAY:
         return
-    # Build a tiny summary: version + count + 2 sample mappings (if available)
     uniq = []
-    for l, c in zip(labels, colors):
-        key = _norm_label(l)
-        if key not in uniq:
-            uniq.append(key)
+    for l in labels:
+        k = _norm_label(l)
+        if k not in uniq:
+            uniq.append(k)
     samples = []
     for name in uniq[:2]:
         col = FUNCTION_COLOR.get(name, "#6B7280")
@@ -125,15 +115,10 @@ def plot_hbar_by_function(
     value_col: str,
     title: str,
     xlabel: str,
-    figsize: Tuple[float, float] = (10.5, 3.2),
+    figsize: Tuple[float, float] = (10.8, 3.2),
 ) -> io.BytesIO:
-    """
-    Horizontal bar chart with consistent per-function colors.
-    Returns a PNG image in-memory (BytesIO).
-    """
+    """Horizontal bar chart with consistent per-function colors. Returns PNG bytes."""
     labels, values = _prep_series_for_plot(df, func_col, value_col)
-
-    # Ensure color map includes every function label we will draw
     _ensure_colors_for(labels)
     colors = [FUNCTION_COLOR.get(_norm_label(lbl), "#6B7280") for lbl in labels]
 
@@ -141,12 +126,10 @@ def plot_hbar_by_function(
     ax.barh(labels, values, color=colors, edgecolor="none")
     ax.set_title(title, pad=8)
     ax.set_xlabel(xlabel)
-    ax.set_ylabel("")  # cleaner
+    ax.set_ylabel("")
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
     ax.grid(axis="x", linestyle=":", linewidth=0.6, alpha=0.5)
-
-    # Visible debug proof
     _annotate_debug(ax, labels, colors)
 
     fig.tight_layout()
@@ -156,36 +139,24 @@ def plot_hbar_by_function(
     buf.seek(0)
     return buf
 
-# ========= SECTION WRAPPERS (adjust value columns if yours differ) =========
+# ========= SECTION WRAPPERS =========
 
 def chart_relationship_focus_by_function(df_relationship: pd.DataFrame) -> io.BytesIO:
-    """
-    Expects:
-      - "Business Function"
-      - "avg_score" (1–5)
-    """
     return plot_hbar_by_function(
         df_relationship,
         func_col=FUNC_COL,
-        value_col="avg_score",
+        value_col="avg_score",  # 1–5
         title="Relationship Focus: Avg Score by Business Function",
         xlabel="Average Score (1–5)",
-        figsize=(10.8, 3.2),
     )
 
 def chart_collusion_by_function(df_collusion: pd.DataFrame) -> io.BytesIO:
-    """
-    Expects:
-      - "Business Function"
-      - "percent_positive" (0–100)
-    """
     return plot_hbar_by_function(
         df_collusion,
         func_col=FUNC_COL,
-        value_col="percent_positive",
+        value_col="percent_positive",  # 0–100
         title="Collusion: % Positive by Business Function",
         xlabel="Percent Positive",
-        figsize=(10.8, 3.2),
     )
 
 def chart_trust_by_function(df_trust: pd.DataFrame) -> io.BytesIO:
@@ -195,7 +166,6 @@ def chart_trust_by_function(df_trust: pd.DataFrame) -> io.BytesIO:
         value_col="percent_positive",
         title="Trust: % Positive by Business Function",
         xlabel="Percent Positive",
-        figsize=(10.8, 3.2),
     )
 
 def chart_accountability_by_function(df_accountability: pd.DataFrame) -> io.BytesIO:
@@ -205,7 +175,6 @@ def chart_accountability_by_function(df_accountability: pd.DataFrame) -> io.Byte
         value_col="percent_positive",
         title="Accountability: % Positive by Business Function",
         xlabel="Percent Positive",
-        figsize=(10.8, 3.2),
     )
 
 def chart_feedback_giving_by_function(df_feedback_giving: pd.DataFrame) -> io.BytesIO:
@@ -215,7 +184,6 @@ def chart_feedback_giving_by_function(df_feedback_giving: pd.DataFrame) -> io.By
         value_col="percent_positive",
         title="Feedback (Giving): % Positive by Business Function",
         xlabel="Percent Positive",
-        figsize=(10.8, 3.2),
     )
 
 def chart_feedback_receiving_by_function(df_feedback_receiving: pd.DataFrame) -> io.BytesIO:
@@ -225,7 +193,30 @@ def chart_feedback_receiving_by_function(df_feedback_receiving: pd.DataFrame) ->
         value_col="percent_positive",
         title="Feedback (Receiving): % Positive by Business Function",
         xlabel="Percent Positive",
-        figsize=(10.8, 3.2),
     )
 
-def chart_sensitivity_by_function(df_sensitivity: pd.DataFrame) -> io.
+def chart_sensitivity_by_function(df_sensitivity: pd.DataFrame) -> io.BytesIO:
+    return plot_hbar_by_function(
+        df_sensitivity,
+        func_col=FUNC_COL,
+        value_col="percent_positive",
+        title="Sensitivity: % Positive by Business Function",
+        xlabel="Percent Positive",
+    )
+
+def chart_generic_by_function(
+    df: pd.DataFrame,
+    value_col: str,
+    title: str,
+    xlabel: str,
+    width: float = 10.8,
+    height: float = 3.2,
+) -> io.BytesIO:
+    return plot_hbar_by_function(
+        df,
+        func_col=FUNC_COL,
+        value_col=value_col,
+        title=title,
+        xlabel=xlabel,
+        figsize=(width, height),
+    )
