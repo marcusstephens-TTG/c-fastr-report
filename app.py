@@ -36,7 +36,7 @@ def log(msg: str, data: dict | None = None):
 # =========================
 DEFAULT_TEMPLATE_FILENAME = "client_report_template.docx"
 DEFAULT_SURVEY_CSV        = os.getenv("CFASTR_SURVEY", "CFastR_Survey_Data.csv")
-DEFAULT_MAPPING_CSV       = os.getenv("CFASTR_MAPPING", "CFastR_Mapping.csv")
+DEFAULT_MAPPING_CSV       = os.getenv("CFASTR_MAPPING", "CFASTR_Category_Mapping_V1.csv")
 
 DISPLAY_TO_KEY = {
     "Collusion": "collusion",
@@ -48,9 +48,7 @@ DISPLAY_TO_KEY = {
     "Relationship Focus": "relationship_focus",
     "Relationships": "relationship_focus",  # alias
 }
-KEY_TO_DISPLAY = {
-    v: k for k, v in DISPLAY_TO_KEY.items()
-}
+KEY_TO_DISPLAY = {v: k for k, v in DISPLAY_TO_KEY.items()}
 
 CATEGORY_ORDER = [
     "collusion",
@@ -353,7 +351,7 @@ def generate_client_report(
     except Exception:
         pass
 
-    # The report may also want numeric %s; expose topline % too if your template uses them
+    # Expose topline % (optional if template uses them)
     for k, v in topline_pct.items():
         base_context[f"{k}_pct"] = round(float(v), 1)
 
@@ -388,7 +386,7 @@ st.title("C FASTR Diagnostics — Survey-driven charts (vertical, categorical co
 
 with st.expander("How this works", expanded=True):
     st.markdown("""
-- Reads **CFastR_Survey_Data.csv** (one row per respondent) and **CFastR_Mapping.csv** (which question maps to which category, and whether high/low is "good").
+- Reads **CFastR_Survey_Data.csv** (one row per respondent) and **CFASTR_Category_Mapping_V1.csv** (which question maps to which category, and whether high/low is "good").
 - Computes **good %** as:
   - If `good_when = high`: answers **4 or 5** count as good
   - If `good_when = low`:  answers **1 or 2** count as good
