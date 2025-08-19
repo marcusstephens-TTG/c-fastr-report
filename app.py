@@ -310,7 +310,8 @@ def save_breakdown_vertical(title: str, items: List[Tuple[str, float]], out_path
     fig, ax = plt.subplots(figsize=(max(6.5, len(labels)*0.9), 4.2))
     ax.bar(list(range(len(labels))), list(values), color=colors)
     ax.set_ylim(0, 100); ax.set_ylabel("% positive"); ax.set_title(title)
-    ax.set_xticks(list(range(len(labels))), labels, rotation=20, ha="right")
+    ax.set_xticks(list(range(len(labels))))
+    ax.set_xticklabels(labels, rotation=20, ha="right")
     for s in ("top","right"): ax.spines[s].set_visible(False)
     fig.tight_layout(); out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, dpi=150); plt.close(fig)
@@ -354,8 +355,7 @@ def generate_client_report(
     for cat_key in CATEGORY_ORDER:
         bucket = breakdown.get(cat_key, {})
         if bucket.get("function"):
-            imgf = chart_dir / f"{cat_key}_by_function_chart.png"}
-            # title kept simple so bars read the category from the template context
+            imgf = chart_dir / f"{cat_key}_by_function_chart.png"
             save_breakdown_vertical(f"{cat_key.replace('_',' ').title()}: by Business Function",
                                     bucket["function"], imgf, mode="function")
             ctx[f"{cat_key}_by_function_chart"] = str(imgf)
