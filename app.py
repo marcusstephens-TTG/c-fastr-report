@@ -2,9 +2,9 @@
 # Builds vertical breakdown charts with categorical colors (no risk bands)
 from __future__ import annotations
 
-import os, json, datetime as dt, inspect, csv, io, re
+import os, json, datetime as dt, inspect, csv, re
 from pathlib import Path
-from typing import Dict, Any, Tuple, List, Iterable, Optional
+from typing import Dict, Any, Tuple, List, Optional
 
 import streamlit as st
 
@@ -90,14 +90,11 @@ def color_for_level(name: str) -> Tuple[float,float,float]:
 # =========================
 def norm_cat_to_key(raw: str) -> Optional[str]:
     if not raw: return None
-    # exact display
     if raw in DISPLAY_TO_KEY: return DISPLAY_TO_KEY[raw]
-    # relaxed compare (strip non-letters)
     r = re.sub(r"[^a-z]+", "", raw.lower())
     for disp, key in DISPLAY_TO_KEY.items():
         if re.sub(r"[^a-z]+", "", disp.lower()) == r:
             return key
-    # already a key?
     if raw.lower() in CATEGORY_ORDER: return raw.lower()
     return None
 
@@ -125,54 +122,64 @@ def load_survey(path: Path) -> List[Dict[str,str]]:
 # =========================
 def resolve_field_from_question(qnum: str, headers: List[str]) -> Optional[str]:
     """
-    Try to map a mapping “Question Number” to an actual survey header.
-    Tries several variants: exact, case-insensitive, numeric → Q<num>, Question <num>, and prefixes like 'Q12 - ...'
+    Map a mapping “Question Number” to a survey header.
+    Accepts exact match, case-insensitive, numeric → Q<num>/Question <num>, and prefix like 'Q12 - ...'
     """
     if not qnum: return None
     q = qnum.strip()
 
-    # direct exact/case-insensitive
+    # exact / case-insensitive
     for h in headers:
         if h == q or h.lower() == q.lower():
             return h
 
-    # extract a bare number (e.g., '12' from 'Q12', '12.', 'Question 12')
+    # numeric candidates
     m = re.search(r"\d+", q)
     num = m.group(0) if m else None
     candidates = []
     if num:
         candidates += [f"Q{num}", f"Q{num}.", f"Q{num}_", f"Question {num}", f"Q{num} -", f"Q{num}—", f"Q{num} –"]
-    # also try prefix matching like 'Q12 - ...'
-    q_prefix = re.sub(r"\s+[-–—:].*$", "", q)  # cut off after space-dash/colon
+    # prefix variant
+    q_prefix = re.sub(r"\s+[-–—:].*$", "", q)
     if q_prefix:
         candidates.append(q_prefix)
 
-    # case-insensitive startswith/equals on candidates
     lc_headers = [(h, h.lower()) for h in headers]
     for cand in candidates:
         lc = cand.lower()
-        # exact
         for h, hl in lc_headers:
             if hl == lc: return h
-        # startswith
         for h, hl in lc_headers:
             if hl.startswith(lc): return h
 
-    # relaxed: remove non-alphanumerics and compare prefixes
     r_q = re.sub(r"[^a-z0-9]+", "", q.lower())
     for h in headers:
         r_h = re.sub(r"[^a-z0-9]+", "", h.lower())
         if r_h.startswith(r_q) or r_q.startswith(r_h):
             return h
+    return None
 
+def parse_polarity_to_good_when(polarity_raw: str) -> Optional[str]:
+    """
+    Convert mapping Polarity to good_when based on 1..5 scale (1=Strongly Agree):
+      positive  -> agreement is good  -> low values good  -> 'low'
+      negative  -> agreement is bad   -> high values good -> 'high'
+    Accepts: 'positive'/'pos', 'negative'/'neg', and numeric encodings '1', '1.0', '+1' (positive) / '-1', '-1.0' (negative).
+    """
+    if polarity_raw is None: return None
+    p = polarity_raw.strip().lower().replace(" ", "")
+    if p in {"positive","pos","p","+","+1","1","+1.0","1.0","true","t","lowgood","goodlow"}:
+        return "low"
+    if p in {"negative","neg","n","-","-1","-1.0","false","f","highgood","goodhigh"}:
+        return "high"
     return None
 
 def load_and_resolve_mapping(path: Path, survey_headers: List[str]) -> List[Dict[str,str]]:
     """
-    Mapping CSV columns (exact, per your spec):
+    Mapping CSV columns (exact, per spec):
       - Question Number
       - C FASTR Category
-      - Polarity           (positive/negative)
+      - Polarity           (positive/negative or 1/-1)
       - Special Interest   (optional)
     Returns rows with resolved survey field names and polarity converted to good_when ('low' or 'high').
     """
@@ -192,23 +199,15 @@ def load_and_resolve_mapping(path: Path, survey_headers: List[str]) -> List[Dict
     for row in raw_rows:
         qnum      = row.get("Question Number", "")
         cat_disp  = row.get("C FASTR Category", "")
-        polarity  = (row.get("Polarity", "") or "").lower()
+        polarity  = row.get("Polarity", "")
         special   = row.get("Special Interest", "")
 
         cat_key = norm_cat_to_key(cat_disp)
-        if not (qnum and cat_key and polarity):
-            unresolved_samples.append({"qn": qnum, "cat": cat_disp, "polarity": polarity, "reason":"missing-field"})
-            continue
+        good_when = parse_polarity_to_good_when(polarity)
 
-        # Polarity mapping given your 1..5 scale (1=Strongly Agree):
-        # positive  -> agreement is good  -> low values (1/2) good  -> good_when = 'low'
-        # negative  -> agreement is bad   -> high values (4/5) good -> good_when = 'high'
-        if polarity.startswith("pos"):
-            good_when = "low"
-        elif polarity.startswith("neg"):
-            good_when = "high"
-        else:
-            unresolved_samples.append({"qn": qnum, "cat": cat_disp, "polarity": polarity, "reason":"unknown-polarity"})
+        if not (qnum and cat_key and good_when):
+            reason = "missing-field" if not (qnum and cat_key and polarity) else "unknown-polarity"
+            unresolved_samples.append({"qn": qnum, "cat": cat_disp, "polarity": polarity, "reason": reason})
             continue
 
         field = resolve_field_from_question(qnum, survey_headers)
@@ -355,7 +354,8 @@ def generate_client_report(
     for cat_key in CATEGORY_ORDER:
         bucket = breakdown.get(cat_key, {})
         if bucket.get("function"):
-            imgf = chart_dir / f"{cat_key}_by_function_chart.png"
+            imgf = chart_dir / f"{cat_key}_by_function_chart.png"}
+            # title kept simple so bars read the category from the template context
             save_breakdown_vertical(f"{cat_key.replace('_',' ').title()}: by Business Function",
                                     bucket["function"], imgf, mode="function")
             ctx[f"{cat_key}_by_function_chart"] = str(imgf)
@@ -373,7 +373,6 @@ def generate_client_report(
     except Exception:
         pass
 
-    # also expose topline numeric % if the template uses them
     for k, v in topline_pct.items():
         ctx[f"{k}_pct"] = round(float(v),1)
 
@@ -408,7 +407,8 @@ with st.expander("How this works", expanded=True):
 - **Mapping columns (exact names):**
   - `Question Number` — your question ID (e.g., `Q12`, `12`, or `Q12 – text`)
   - `C FASTR Category` — Collusion / Feedback, Receiving / Feedback, Giving / Accountability / Sensitivity / Trust / Relationship Focus
-  - `Polarity` — `positive` (1/2 = good) or `negative` (4/5 = good) given your 1..5 scale (1=Strongly Agree).
+  - `Polarity` — accepts `positive`/`pos` **or** numeric encodings `1`, `1.0`, `+1` (positive); `negative`/`neg` **or** `-1`, `-1.0` (negative).
+    *Positive → 1/2 count good; Negative → 4/5 count good* (scale: 1=Strongly Agree … 5=Strongly Disagree).
   - `Special Interest` — optional; parsed, not used yet.
 - The app resolves each `Question Number` to a **survey column header** (exact match, `Q<num>`, `Question <num>`, or prefix like `Q12 - ...`).
 - Generates **category single bars** and **vertical breakdown charts** (by Function & by Level) with label-consistent colors.
@@ -436,7 +436,7 @@ if submitted:
 
         if not mapping_rows:
             st.error("No mapping rows resolved. Check 'Question Number', 'C FASTR Category', and 'Polarity' values.")
-            st.info("See Recent log output below for unresolved samples.")
+            st.info("See Recent log output below for unresolved samples (polarity/field mismatches).")
         else:
             st.success(f"{len(mapping_rows)} mapping rows resolved to survey columns.")
 
