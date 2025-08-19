@@ -21,7 +21,8 @@ from docx.shared import Mm
 # Diagnostics
 # =========================
 LOGFILE = Path("cfastr_run.log").resolve()
-def _now() -> str: return dt.datetime.now().isoformat(timespec="seconds")
+def _now() -> str:
+    return dt.datetime.now().isoformat(timespec="seconds")
 def log(msg: str, data: dict | None = None):
     payload = {"ts": _now(), "msg": msg, "data": data or {}}
     LOGFILE.parent.mkdir(parents=True, exist_ok=True)
@@ -168,11 +169,11 @@ def resolve_field_from_question(qnum: str, headers: List[str]) -> Optional[str]:
 
 def load_and_resolve_mapping(path: Path, survey_headers: List[str]) -> List[Dict[str,str]]:
     """
-    Mapping CSV columns (case-sensitive names per your spec):
+    Mapping CSV columns (exact, per your spec):
       - Question Number
       - C FASTR Category
       - Polarity           (positive/negative)
-      - Special Interest   (optional, passthrough)
+      - Special Interest   (optional)
     Returns rows with resolved survey field names and polarity converted to good_when ('low' or 'high').
     """
     if not path.exists():
@@ -199,9 +200,9 @@ def load_and_resolve_mapping(path: Path, survey_headers: List[str]) -> List[Dict
             unresolved_samples.append({"qn": qnum, "cat": cat_disp, "polarity": polarity, "reason":"missing-field"})
             continue
 
-        # polarity mapping based on your 1..5 scale (1=Strongly Agree):
-        # positive  -> agreement is good  -> low values (1/2) are good  -> good_when = 'low'
-        # negative  -> agreement is bad   -> high values (4/5) are good -> good_when = 'high'
+        # Polarity mapping given your 1..5 scale (1=Strongly Agree):
+        # positive  -> agreement is good  -> low values (1/2) good  -> good_when = 'low'
+        # negative  -> agreement is bad   -> high values (4/5) good -> good_when = 'high'
         if polarity.startswith("pos"):
             good_when = "low"
         elif polarity.startswith("neg"):
@@ -238,7 +239,7 @@ def compute_aggregates(
     mapping: List[Dict[str,str]],
     function_col: str,
     level_col: str,
-) -> tuple[Dict[str,float], Dict[str, Dict[str, List[Tuple[str,float]]]]]:
+) -> Tuple[Dict[str,float], Dict[str, Dict[str, List[Tuple[str,float]]]]]:
     overall = {cat: {"good":0, "total":0} for cat in CATEGORY_ORDER}
     by_func: Dict[str, Dict[str, Dict[str,int]]] = {cat:{} for cat in CATEGORY_ORDER}
     by_level: Dict[str, Dict[str, Dict[str,int]]] = {cat:{} for cat in CATEGORY_ORDER}
@@ -252,10 +253,10 @@ def compute_aggregates(
             cat   = m["category_key"]
             gw    = m["good_when"]  # 'low' or 'high'
             val   = val_to_num(row.get(field))
-            if val is None:  # skip blanks/non-numeric
+            if val is None:
                 continue
 
-            # Based on your scale: 1..5 (1=Strongly Agree)
+            # 1..5 scale (1=Strongly Agree):
             # good_when='low'  -> 1 or 2 are good
             # good_when='high' -> 4 or 5 are good
             is_good = (val <= 2.0) if gw == "low" else (val >= 4.0)
@@ -269,7 +270,7 @@ def compute_aggregates(
             lslot = by_level[cat].setdefault(lvl, {"good":0, "total":0})
             lslot["total"] += 1; lslot["good"] += 1 if is_good else 0
 
-    topline_pct = {
+    topline_pct: Dict[str,float] = {
         cat: ((c["good"]/c["total"])*100.0 if c["total"]>0 else 0.0)
         for cat, c in overall.items()
     }
@@ -328,8 +329,10 @@ def generate_client_report(
     tpl = get_template_path()
     if not tpl.exists():
         log("TEMPLATE_NOT_FOUND", {"attempted": str(tpl)})
-        raise FileNotFoundError(f"Template not found at {tpl}. Place '{DEFAULT_TEMPLATE_FILENAME}' next to app.py "
-                                f"or set CFASTR_TEMPLATE to an absolute path.")
+        raise FileNotFoundError(
+            f"Template not found at {tpl}. Place '{DEFAULT_TEMPLATE_FILENAME}' next to app.py "
+            f"or set CFASTR_TEMPLATE to an absolute path."
+        )
     log("TEMPLATE_OPEN", {"path": str(tpl)})
 
     out_path = out_path.resolve()
@@ -371,7 +374,8 @@ def generate_client_report(
         pass
 
     # also expose topline numeric % if the template uses them
-    for k, v in topline_pct.items(): ctx[f"{k}_pct"] = round(float(v),1)
+    for k, v in topline_pct.items():
+        ctx[f"{k}_pct"] = round(float(v),1)
 
     fin: Dict[str, Any] = {}
     for k, v in ctx.items():
@@ -395,7 +399,7 @@ def generate_client_report(
 # =========================
 # Streamlit UI
 # =========================
-st.set_page_config(page_title="C FASTR Diagnostics", layout="centered")
+st.set_page_config(page_title="C FASTR — Survey-driven charts", layout="centered")
 st.title("C FASTR — Survey-driven charts (vertical; categorical colors)")
 
 with st.expander("How this works", expanded=True):
@@ -405,9 +409,12 @@ with st.expander("How this works", expanded=True):
   - `Question Number` — your question ID (e.g., `Q12`, `12`, or `Q12 – text`)
   - `C FASTR Category` — Collusion / Feedback, Receiving / Feedback, Giving / Accountability / Sensitivity / Trust / Relationship Focus
   - `Polarity` — `positive` (1/2 = good) or `negative` (4/5 = good) given your 1..5 scale (1=Strongly Agree).
-  - `Special Interest` — optional, logged; not used yet.
+  - `Special Interest` — optional; parsed, not used yet.
 - The app resolves each `Question Number` to a **survey column header** (exact match, `Q<num>`, `Question <num>`, or prefix like `Q12 - ...`).
 - Generates **category single bars** and **vertical breakdown charts** (by Function & by Level) with label-consistent colors.
+- Template placeholders expected (examples):
+  - `{{ collusion_by_function_chart }}`, `{{ collusion_by_level_chart }}`
+  - `{{ trust_by_function_chart }}`, `{{ trust_by_level_chart }}`
 """)
 
 with st.form("inputs"):
@@ -427,9 +434,35 @@ if submitted:
         headers = list(survey_rows[0].keys()) if survey_rows else []
         mapping_rows = load_and_resolve_mapping(here(mapping_path), headers)
 
-        # Fast feedback if nothing mapped
         if not mapping_rows:
             st.error("No mapping rows resolved. Check 'Question Number', 'C FASTR Category', and 'Polarity' values.")
-            st.info("See Recent log output below for a sample of unresolved rows.")
+            st.info("See Recent log output below for unresolved samples.")
         else:
-            st.success(f"{
+            st.success(f"{len(mapping_rows)} mapping rows resolved to survey columns.")
+
+        topline_pct, breakdowns = compute_aggregates(
+            survey_rows, mapping_rows, function_col=function_col, level_col=level_col
+        )
+
+        expected_tpl = get_template_path()
+        st.caption(f"Expected template location: `{expected_tpl}`")
+
+        out_file = Path("out") / out_name
+        result = generate_client_report(topline_pct, breakdowns, out_file)
+        st.success(f"Report written to: {result}")
+        st.code(str(result), language="bash")
+
+        try:
+            with LOGFILE.open("r", encoding="utf-8") as f:
+                lines = f.readlines()[-80:]
+            st.text_area("Recent log output", value="".join(lines), height=360)
+        except Exception:
+            st.info("No log file yet.")
+    except Exception as e:
+        st.error(str(e))
+        try:
+            with LOGFILE.open("r", encoding="utf-8") as f:
+                lines = f.readlines()[-80:]
+            st.text_area("Recent log output", value="".join(lines), height=360)
+        except Exception:
+            st.info("No log file yet.")
