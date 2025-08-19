@@ -1,174 +1,202 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
+# app.py — Single-file Streamlit app with simple, explicit diagnostics
+from __future__ import annotations
 
-# Streamlit front-end for the C FASTR™ report generator.
-# Restores full consultant inputs (Title page, Exec Summary, Conclusion),
-# writes them to consultant_inputs.json in the schema the generator expects,
-# runs generate_client_report_PATCHED.py, and offers a properly named download.
+import os, json, datetime as dt, inspect
+from pathlib import Path
+from typing import Dict, Any, Tuple
 
-import os
-import sys
-import json
-import subprocess
-import datetime
-import re
 import streamlit as st
 
-# ---------- Files your generator expects (leave as-is unless you change the script) ----------
-SURVEY_CSV     = "CFastR_Survey_Data.csv"
-MAPPING_CSV    = "CFASTR_Category_Mapping_V1.csv"
-THRESHOLDS_CSV = "category_copy_thresholds.csv"
-TEMPLATE_DOCX  = "client_report_template.docx"
-OUTPUT_DOCX    = "Client_CFASTR_Report_Generated.docx"
-SCRIPT         = "generate_client_report_PATCHED.py"
-JSON_PATH      = "consultant_inputs.json"
+# Charts
+import matplotlib
+matplotlib.use("Agg")  # headless
+import matplotlib.pyplot as plt
 
-st.set_page_config(page_title="C FASTR Report Builder", layout="centered")
+# Word report
+from docxtpl import DocxTemplate, InlineImage
+from docx.shared import Mm
 
-# ---------- Helpers ----------
-def build_download_name(company: str) -> str:
-    """
-    Return TTG - <Company> - YYYY-MM-DD - H-MM AM/PM.docx
-    (Windows-safe: no weird chars, no seconds)
-    """
-    safe_company = re.sub(r"[^\w\s\-]", "", (company or "").strip())
-    safe_company = re.sub(r"\s+", " ", safe_company).strip() or "Unknown Company"
-    date_str = datetime.date.today().isoformat()
-    time_str = datetime.datetime.now().strftime("%I-%M %p").lstrip("0")  # e.g., 3-07 PM
-    return f"TTG - {safe_company} - {date_str} - {time_str}.docx"
+# ---------------------------
+# Minimal diagnostic helpers
+# ---------------------------
+LOGFILE = Path("cfastr_run.log").resolve()
 
-def file_ok(path: str) -> bool:
-    return os.path.exists(path)
+def _now() -> str:
+    return dt.datetime.now().isoformat(timespec="seconds")
 
-# ---------- UI ----------
-st.title("C FASTR Report Builder")
-st.markdown(
-    "When you click **Generate Report**, the app writes your inputs to "
-    "`consultant_inputs.json`, runs the generator, and gives you a download."
-)
+def log(msg: str, data: dict | None = None):
+    payload = {"ts": _now(), "msg": msg, "data": data or {}}
+    LOGFILE.parent.mkdir(parents=True, exist_ok=True)
+    with LOGFILE.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(payload) + "\n")
+    # Also echo to Streamlit for immediate visibility
+    st.caption(f"[{payload['ts']}] {msg} — {payload['data']}")
 
-with st.expander("Required files on the server (must sit next to app.py)", expanded=False):
-    cols = st.columns(2)
-    cols[0].write(("✅ " if file_ok(SURVEY_CSV) else "❌ ") + SURVEY_CSV)
-    cols[1].write(("✅ " if file_ok(MAPPING_CSV) else "❌ ") + MAPPING_CSV)
-    cols[0].write(("✅ " if file_ok(THRESHOLDS_CSV) else "❌ ") + THRESHOLDS_CSV)
-    cols[1].write(("✅ " if file_ok(TEMPLATE_DOCX) else "❌ ") + TEMPLATE_DOCX)
-    st.write(("✅ " if file_ok(SCRIPT) else "❌ ") + SCRIPT)
+# ---------------------------
+# Config: where is the template?
+# Default: same folder as app.py, filename you specified
+# ---------------------------
+DEFAULT_TEMPLATE_FILENAME = "client_report_template.docx"
 
-st.divider()
-st.subheader("Consultant Inputs")
+def get_template_path() -> Path:
+    env = os.getenv("CFASTR_TEMPLATE")
+    if env:
+        p = Path(env).expanduser().resolve()
+    else:
+        # EXACTLY next to app.py (no templates/ folder)
+        p = (Path(__file__).parent / DEFAULT_TEMPLATE_FILENAME).resolve()
+    return p
 
-# Use a form to avoid reruns while typing.
-with st.form("inputs_form", clear_on_submit=False):
-    st.markdown("### Title Page")
-    c1, c2 = st.columns(2)
-    company_name = c1.text_input("Company Name *", placeholder="Acme Corp")
-    client_contact = c2.text_input("Client Contact (optional)", placeholder="Jane Doe, CHRO")
-    report_date = c1.text_input("Report Date (optional)", placeholder="e.g., 2025-08-16")
-    confidentiality_notice = c2.text_area(
-        "Confidentiality Notice (optional)",
-        placeholder="Leave blank to use the default notice"
-    )
-
-    st.markdown("### Executive Summary")
-    engagement_summary = st.text_area("Engagement Summary (optional)", height=120)
-    results_summary    = st.text_area("Results Summary (optional)", height=120)
-    suggested_actions  = st.text_area("Suggested Actions (optional)", height=120)
-
-    st.markdown("### Conclusion")
-    conc_overview           = st.text_area("Overview (optional)", height=120)
-    conc_3090               = st.text_area("30/60/90 (optional)", height=120)
-    conc_next_30            = st.text_area("Next 30 Days (optional)", height=100)
-    conc_days_31_60         = st.text_area("Days 31–60 (optional)", height=100)
-    conc_days_61_90         = st.text_area("Days 61–90 (optional)", height=100)
-    conc_metrics_quarterly  = st.text_area("Metrics (Quarterly) (optional)", height=100)
-    conc_closing_thoughts   = st.text_area("Closing Thoughts (optional)", height=100)
-
-    submitted = st.form_submit_button("🚀 Generate Report", type="primary")
-
-# Stop until they submit.
-if not submitted:
-    st.stop()
-
-# ---------- Validate required fields ----------
-errors = []
-if not (company_name or "").strip():
-    errors.append("Please enter a Company Name.")
-if errors:
-    st.error("\\n".join(errors))
-    st.stop()
-
-# ---------- Verify required on-disk files before running ----------
-missing = [p for p in (SURVEY_CSV, MAPPING_CSV, THRESHOLDS_CSV, TEMPLATE_DOCX, SCRIPT) if not file_ok(p)]
-if missing:
-    st.error(
-        "These required files are missing on the server (next to `app.py`). "
-        "Add them and try again:\\n\\n" + "\\n".join(f"- {m}" for m in missing)
-    )
-    st.stop()
-
-# ---------- Write consultant_inputs.json in the expected schema ----------
-payload = {
-    "title_page": {
-        "company_name": (company_name or "").strip(),
-        "client_contact": (client_contact or "").strip(),
-        "report_date": (report_date or "").strip(),
-        "confidentiality_notice": (confidentiality_notice or "").strip(),
-    },
-    "exec_summary": {
-        "engagement_summary": (engagement_summary or "").strip(),
-        "results_summary": (results_summary or "").strip(),
-        "suggested_actions": (suggested_actions or "").strip(),
-    },
-    "conclusion": {
-        "overview": (conc_overview or "").strip(),
-        "thirty_sixty_ninety": (conc_3090 or "").strip(),
-        "next_30_days": (conc_next_30 or "").strip(),
-        "days_31_60": (conc_days_31_60 or "").strip(),
-        "days_61_90": (conc_days_61_90 or "").strip(),
-        "metrics_quarterly": (conc_metrics_quarterly or "").strip(),
-        "closing_thoughts": (conc_closing_thoughts or "").strip(),
-    },
-    "meta": {
-        "generated_at": datetime.datetime.now().isoformat(),
-        "app_version": "ui-restore-1",
-    },
+# ---------------------------
+# Deterministic color logic
+# ---------------------------
+PALETTE = {
+    "poor": "#D32F2F",  # <60%
+    "mid":  "#FBC02D",  # 60–79%
+    "good": "#388E3C",  # 80%+
 }
 
-try:
-    with open(JSON_PATH, "w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=2, ensure_ascii=False)
-except Exception as e:
-    st.error(f"Failed to write {JSON_PATH}: {e}")
-    st.stop()
+def pick_band_color(score_pct: float) -> Tuple[str, str]:
+    if score_pct < 60:
+        return "poor", PALETTE["poor"]
+    if score_pct < 80:
+        return "mid", PALETTE["mid"]
+    return "good", PALETTE["good"]
 
-# ---------- Run the generator ----------
-st.write("Running report generation…")
-try:
-    result = subprocess.run(
-        [sys.executable, SCRIPT],
-        capture_output=True, text=True, check=False
-    )
-except Exception as e:
-    st.error(f"Failed to launch script: {e}")
-    st.stop()
+# ---------------------------
+# Chart generation (logs the path it writes)
+# ---------------------------
+def save_band_bar(category: str, score_pct: float, out_path: Path):
+    band, color = pick_band_color(score_pct)
+    fig, ax = plt.subplots(figsize=(4, 2))
+    ax.bar([category], [score_pct], color=color)
+    ax.set_ylim(0, 100)
+    ax.set_ylabel("% positive")
+    ax.set_title(f"{category} — {score_pct:.0f}%")
+    for s in ("top", "right"):
+        ax.spines[s].set_visible(False)
+    fig.tight_layout()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+    log("CHART_SAVED", {"category": category, "score_pct": score_pct, "band": band, "file": str(out_path)})
 
-# Show logs (helpful when troubleshooting)
-if result.stdout:
-    st.code(result.stdout, language="bash")
-if result.stderr:
-    st.code(result.stderr, language="bash")
+# ---------------------------
+# Report generation (prints where it READS template and WRITES docx)
+# ---------------------------
+def generate_client_report(context: Dict[str, Any], out_path: Path) -> Path:
+    # Confirm which file is running & from where
+    module_file = Path(inspect.getsourcefile(generate_client_report)).resolve()
+    st.caption(f"Running code from: `{module_file}`")
 
-# ---------- Offer the generated file for download ----------
-if os.path.exists(OUTPUT_DOCX):
-    with open(OUTPUT_DOCX, "rb") as f:
-        data = f.read()
-    st.success("Report generated! Download below:")
-    st.download_button(
-        "⬇️ Download Report",
-        data=data,
-        file_name=build_download_name(company_name),
-        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    )
-else:
-    st.error("The report file was not created. Check the logs above for errors.")
+    # Resolve template right before use, then LOG IT
+    tpl = get_template_path()
+    if not tpl.exists():
+        log("TEMPLATE_NOT_FOUND", {"attempted": str(tpl)})
+        raise FileNotFoundError(
+            f"Template not found at {tpl}. "
+            f"Place '{DEFAULT_TEMPLATE_FILENAME}' next to app.py or set CFASTR_TEMPLATE to an absolute path."
+        )
+    log("TEMPLATE_OPEN", {"path": str(tpl)})
+
+    # Build per-category charts, logging each saved file
+    out_path = out_path.resolve()
+    chart_dir = out_path.parent / "charts"
+    categories = [
+        ("Collusion", "collusion_pct", "collusion_bar"),
+        ("Feedback", "feedback_pct", "feedback_bar"),
+        ("Accountability", "accountability_pct", "accountability_bar"),
+        ("Sensitivity", "sensitivity_pct", "sensitivity_bar"),
+        ("Trust", "trust_pct", "trust_bar"),
+        ("Relationships", "relationships_pct", "relationships_bar"),
+    ]
+
+    charts: Dict[str, str] = {}
+    for label, pct_key, bar_key in categories:
+        score = float(context.get(pct_key, 0.0))
+        img_path = chart_dir / f"{bar_key}.png"
+        save_band_bar(label, score, img_path)
+        charts[bar_key] = str(img_path)
+
+    # Prepare template context (inject image paths; docxtpl will embed them)
+    base_context = dict(context)
+    for _, _, bar_key in categories:
+        base_context[bar_key] = charts[bar_key]
+
+    # Render and WRITE the .docx (log exact path)
+    doc = DocxTemplate(str(tpl))
+    # Convert image paths to InlineImage
+    for k, v in list(base_context.items()):
+        if isinstance(v, str) and v.lower().endswith((".png", ".jpg", ".jpeg")):
+            base_context[k] = InlineImage(doc, v, width=Mm(90))
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    log("RENDER_BEGIN", {"template": str(tpl), "output": str(out_path)})
+    doc.render(base_context)
+    doc.save(str(out_path))
+    log("REPORT_WRITTEN", {"output": str(out_path)})
+
+    return out_path
+
+# ---------------------------
+# Streamlit UI (required)
+# ---------------------------
+st.set_page_config(page_title="C FASTR Report Generator — Simple Diagnostics", layout="centered")
+st.title("C FASTR Report Generator — Simple Diagnostics")
+
+with st.expander("How diagnostics work", expanded=True):
+    st.markdown(f"""
+- The **template is expected next to `app.py`** by default (file: **`{DEFAULT_TEMPLATE_FILENAME}`**).  
+  You can override with `CFASTR_TEMPLATE=/absolute/path/to/file.docx`.
+- When the app **opens the template**, it logs the **exact path**.
+- When the app **saves each chart** and the **final .docx**, it logs those **exact paths**.
+- Logs are printed here and written to `cfastr_run.log`.
+""")
+
+with st.form("inputs"):
+    col1, col2 = st.columns(2)
+    with col1:
+        collusion = st.number_input("Collusion % positive", 0, 100, 55)
+        feedback = st.number_input("Feedback % positive", 0, 100, 62)
+        accountability = st.number_input("Accountability % positive", 0, 100, 47)
+    with col2:
+        sensitivity = st.number_input("Sensitivity % positive", 0, 100, 73)
+        trust = st.number_input("Trust % positive", 0, 100, 66)
+        relationships = st.number_input("Relationships % positive", 0, 100, 81)
+    out_name = st.text_input("Output filename", "cfastr_report.docx")
+    submitted = st.form_submit_button("Generate Report")
+
+if submitted:
+    ctx = {
+        "collusion_pct": collusion,
+        "feedback_pct": feedback,
+        "accountability_pct": accountability,
+        "sensitivity_pct": sensitivity,
+        "trust_pct": trust,
+        "relationships_pct": relationships,
+    }
+    try:
+        # Show the path we expect BEFORE generation
+        expected_tpl = get_template_path()
+        st.caption(f"Expected template location: `{expected_tpl}`")
+
+        out_file = Path("out") / out_name
+        result = generate_client_report(ctx, out_file)
+        st.success(f"Report written to: {result}")
+        st.code(str(result), language="bash")
+
+        # Tail the last few log lines for quick visibility
+        try:
+            with LOGFILE.open("r", encoding="utf-8") as f:
+                lines = f.readlines()[-20:]
+            st.text_area("Recent log output", value="".join(lines), height=220)
+        except Exception:
+            st.info("No log file yet.")
+    except Exception as e:
+        st.error(str(e))
+        try:
+            with LOGFILE.open("r", encoding="utf-8") as f:
+                lines = f.readlines()[-40:]
+            st.text_area("Recent log output", value="".join(lines), height=260)
+        except Exception:
+            st.info("No log file yet.")
