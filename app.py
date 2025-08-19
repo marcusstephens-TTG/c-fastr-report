@@ -1,15 +1,16 @@
-# app.py — C FASTR: compute from survey + mapping; vertical breakdown charts; categorical colors
+# app.py — C FASTR: survey + mapping (Question Number, C FASTR Category, Polarity)
+# Builds vertical breakdown charts with categorical colors (no risk bands)
 from __future__ import annotations
 
 import os, json, datetime as dt, inspect, csv, io, re
 from pathlib import Path
-from typing import Dict, Any, Tuple, List, Iterable
+from typing import Dict, Any, Tuple, List, Iterable, Optional
 
 import streamlit as st
 
 # Charts
 import matplotlib
-matplotlib.use("Agg")  # headless for servers
+matplotlib.use("Agg")  # headless
 import matplotlib.pyplot as plt
 
 # Word report
@@ -17,13 +18,10 @@ from docxtpl import DocxTemplate, InlineImage
 from docx.shared import Mm
 
 # =========================
-# Diagnostics helpers
+# Diagnostics
 # =========================
 LOGFILE = Path("cfastr_run.log").resolve()
-
-def _now() -> str:
-    return dt.datetime.now().isoformat(timespec="seconds")
-
+def _now() -> str: return dt.datetime.now().isoformat(timespec="seconds")
 def log(msg: str, data: dict | None = None):
     payload = {"ts": _now(), "msg": msg, "data": data or {}}
     LOGFILE.parent.mkdir(parents=True, exist_ok=True)
@@ -32,7 +30,7 @@ def log(msg: str, data: dict | None = None):
     st.caption(f"[{payload['ts']}] {msg} — {payload['data']}")
 
 # =========================
-# Config & constants
+# Config
 # =========================
 DEFAULT_TEMPLATE_FILENAME = "client_report_template.docx"
 DEFAULT_SURVEY_CSV        = os.getenv("CFASTR_SURVEY", "CFastR_Survey_Data.csv")
@@ -48,123 +46,68 @@ DISPLAY_TO_KEY = {
     "Relationship Focus": "relationship_focus",
     "Relationships": "relationship_focus",  # alias
 }
-KEY_TO_DISPLAY = {v: k for k, v in DISPLAY_TO_KEY.items()}
-
 CATEGORY_ORDER = [
-    "collusion",
-    "feedback_receiving",
-    "feedback_giving",
-    "accountability",
-    "sensitivity",
-    "trust",
-    "relationship_focus",
+    "collusion","feedback_receiving","feedback_giving",
+    "accountability","sensitivity","trust","relationship_focus",
 ]
 
-# Default survey column names (override in UI if needed)
 DEFAULT_FUNCTION_COL = "Business Function"
-DEFAULT_LEVEL_COL    = "Job Level"   # if absent, try "Title" heuristics, but better to have a column
+DEFAULT_LEVEL_COL    = "Job Level"  # or Title if you don’t have a level column
 
-# =========================
-# Paths
-# =========================
 def get_template_path() -> Path:
     env = os.getenv("CFASTR_TEMPLATE")
-    if env:
-        p = Path(env).expanduser().resolve()
-    else:
-        p = (Path(__file__).parent / DEFAULT_TEMPLATE_FILENAME).resolve()
-    return p
+    return Path(env).expanduser().resolve() if env else (Path(__file__).parent / DEFAULT_TEMPLATE_FILENAME).resolve()
 
-def get_repo_path(name: str) -> Path:
-    """Resolve a file in the same folder as app.py (Streamlit Cloud mount is /mount/src)."""
+def here(name: str) -> Path:
     return (Path(__file__).parent / name).resolve()
 
 # =========================
 # Colors (categorical only)
 # =========================
-CAT_PALETTE  = list(plt.get_cmap("tab10").colors)   # top-line category color
-FUNC_PALETTE = list(plt.get_cmap("tab20").colors)   # many distinct function colors
-LEVEL_PALETTE= list(plt.get_cmap("Set3").colors)    # distinct level colors
+CAT_PALETTE   = list(plt.get_cmap("tab10").colors)   # for single-value bars per category
+FUNC_PALETTE  = list(plt.get_cmap("tab20").colors)   # functions
+LEVEL_PALETTE = list(plt.get_cmap("Set3").colors)    # levels
 
 CATEGORY_COLOR_MAP: Dict[str, Tuple[float,float,float]] = {
     cat: CAT_PALETTE[i % len(CAT_PALETTE)] for i, cat in enumerate(CATEGORY_ORDER)
 }
 FUNCTION_COLOR_MAP: Dict[str, Tuple[float,float,float]] = {}
 LEVEL_COLOR_MAP: Dict[str, Tuple[float,float,float]] = {}
-
 def color_for_function(name: str) -> Tuple[float,float,float]:
-    key = (name or "").strip()
-    if key not in FUNCTION_COLOR_MAP:
-        idx = len(FUNCTION_COLOR_MAP) % len(FUNC_PALETTE)
-        FUNCTION_COLOR_MAP[key] = FUNC_PALETTE[idx]
-    return FUNCTION_COLOR_MAP[key]
-
+    k = (name or "").strip()
+    if k not in FUNCTION_COLOR_MAP:
+        FUNCTION_COLOR_MAP[k] = FUNC_PALETTE[len(FUNCTION_COLOR_MAP) % len(FUNC_PALETTE)]
+    return FUNCTION_COLOR_MAP[k]
 def color_for_level(name: str) -> Tuple[float,float,float]:
-    key = (name or "").strip()
-    if key not in LEVEL_COLOR_MAP:
-        idx = len(LEVEL_COLOR_MAP) % len(LEVEL_PALETTE)
-        LEVEL_COLOR_MAP[key] = LEVEL_PALETTE[idx]
-    return LEVEL_COLOR_MAP[key]
+    k = (name or "").strip()
+    if k not in LEVEL_COLOR_MAP:
+        LEVEL_COLOR_MAP[k] = LEVEL_PALETTE[len(LEVEL_COLOR_MAP) % len(LEVEL_PALETTE)]
+    return LEVEL_COLOR_MAP[k]
 
 # =========================
-# Utility: normalize
+# Normalize helpers
 # =========================
-def norm_cat_to_key(raw: str) -> str | None:
-    if not raw:
-        return None
-    # direct
-    if raw in DISPLAY_TO_KEY:
-        return DISPLAY_TO_KEY[raw]
-    # relaxed
+def norm_cat_to_key(raw: str) -> Optional[str]:
+    if not raw: return None
+    # exact display
+    if raw in DISPLAY_TO_KEY: return DISPLAY_TO_KEY[raw]
+    # relaxed compare (strip non-letters)
     r = re.sub(r"[^a-z]+", "", raw.lower())
     for disp, key in DISPLAY_TO_KEY.items():
         if re.sub(r"[^a-z]+", "", disp.lower()) == r:
             return key
     # already a key?
-    if raw.lower() in CATEGORY_ORDER:
-        return raw.lower()
+    if raw.lower() in CATEGORY_ORDER: return raw.lower()
     return None
 
-def pick_from(row: Dict[str,str], candidates: Iterable[str]) -> str | None:
-    for c in candidates:
-        if c in row and row[c] != "":
-            return row[c]
-    for c in candidates:
-        # case-insensitive fallback
-        for rk in row:
-            if rk.strip().lower() == c.strip().lower() and row[rk] != "":
-                return row[rk]
-    return None
+def val_to_num(v: str) -> Optional[float]:
+    if v is None or v == "": return None
+    try: return float(v)
+    except: return None
 
 # =========================
-# Load mapping & survey
+# Load survey
 # =========================
-def load_mapping(path: Path) -> List[Dict[str,str]]:
-    """
-    Expected columns (case-insensitive):
-      - field (or: question, column)  -> exact column name in survey CSV
-      - category                      -> display name or key (see DISPLAY_TO_KEY)
-      - good_when (or: polarity/direction/good_on) -> 'high' or 'low'
-    """
-    if not path.exists():
-        raise FileNotFoundError(f"Mapping file not found at {path}")
-    out: List[Dict[str,str]] = []
-    with path.open("r", encoding="utf-8", newline="") as f:
-        reader = csv.DictReader(f)
-        for raw in reader:
-            row = { (k or "").strip(): (v or "").strip() for k,v in raw.items() }
-            field = pick_from(row, ["field","question","column","survey_field","survey_column"])
-            cat_raw = pick_from(row, ["category","cat"])
-            good_when = (pick_from(row, ["good_when","good_on","polarity","direction"]) or "").lower()
-            if not (field and cat_raw and good_when in {"high","low"}):
-                continue
-            cat_key = norm_cat_to_key(cat_raw)
-            if not cat_key:
-                continue
-            out.append({"field": field, "category_key": cat_key, "good_when": good_when})
-    log("MAPPING_ROWS", {"count": len(out)})
-    return out
-
 def load_survey(path: Path) -> List[Dict[str,str]]:
     if not path.exists():
         raise FileNotFoundError(f"Survey file not found at {path}")
@@ -177,33 +120,129 @@ def load_survey(path: Path) -> List[Dict[str,str]]:
     return rows
 
 # =========================
-# Compute good% aggregates
+# Mapping resolution
 # =========================
-def val_to_num(v: str) -> float | None:
-    if v is None or v == "":
-        return None
-    try:
-        return float(v)
-    except:
-        return None
+def resolve_field_from_question(qnum: str, headers: List[str]) -> Optional[str]:
+    """
+    Try to map a mapping “Question Number” to an actual survey header.
+    Tries several variants: exact, case-insensitive, numeric → Q<num>, Question <num>, and prefixes like 'Q12 - ...'
+    """
+    if not qnum: return None
+    q = qnum.strip()
 
+    # direct exact/case-insensitive
+    for h in headers:
+        if h == q or h.lower() == q.lower():
+            return h
+
+    # extract a bare number (e.g., '12' from 'Q12', '12.', 'Question 12')
+    m = re.search(r"\d+", q)
+    num = m.group(0) if m else None
+    candidates = []
+    if num:
+        candidates += [f"Q{num}", f"Q{num}.", f"Q{num}_", f"Question {num}", f"Q{num} -", f"Q{num}—", f"Q{num} –"]
+    # also try prefix matching like 'Q12 - ...'
+    q_prefix = re.sub(r"\s+[-–—:].*$", "", q)  # cut off after space-dash/colon
+    if q_prefix:
+        candidates.append(q_prefix)
+
+    # case-insensitive startswith/equals on candidates
+    lc_headers = [(h, h.lower()) for h in headers]
+    for cand in candidates:
+        lc = cand.lower()
+        # exact
+        for h, hl in lc_headers:
+            if hl == lc: return h
+        # startswith
+        for h, hl in lc_headers:
+            if hl.startswith(lc): return h
+
+    # relaxed: remove non-alphanumerics and compare prefixes
+    r_q = re.sub(r"[^a-z0-9]+", "", q.lower())
+    for h in headers:
+        r_h = re.sub(r"[^a-z0-9]+", "", h.lower())
+        if r_h.startswith(r_q) or r_q.startswith(r_h):
+            return h
+
+    return None
+
+def load_and_resolve_mapping(path: Path, survey_headers: List[str]) -> List[Dict[str,str]]:
+    """
+    Mapping CSV columns (case-sensitive names per your spec):
+      - Question Number
+      - C FASTR Category
+      - Polarity           (positive/negative)
+      - Special Interest   (optional, passthrough)
+    Returns rows with resolved survey field names and polarity converted to good_when ('low' or 'high').
+    """
+    if not path.exists():
+        raise FileNotFoundError(f"Mapping file not found at {path}")
+
+    raw_rows: List[Dict[str,str]] = []
+    with path.open("r", encoding="utf-8", newline="") as f:
+        reader = csv.DictReader(f)
+        for r in reader:
+            raw_rows.append({ (k or "").strip(): (v or "").strip() for k,v in r.items() })
+    log("MAPPING_ROWS_FOUND", {"count": len(raw_rows)})
+
+    resolved: List[Dict[str,str]] = []
+    unresolved_samples: List[Dict[str,str]] = []
+
+    for row in raw_rows:
+        qnum      = row.get("Question Number", "")
+        cat_disp  = row.get("C FASTR Category", "")
+        polarity  = (row.get("Polarity", "") or "").lower()
+        special   = row.get("Special Interest", "")
+
+        cat_key = norm_cat_to_key(cat_disp)
+        if not (qnum and cat_key and polarity):
+            unresolved_samples.append({"qn": qnum, "cat": cat_disp, "polarity": polarity, "reason":"missing-field"})
+            continue
+
+        # polarity mapping based on your 1..5 scale (1=Strongly Agree):
+        # positive  -> agreement is good  -> low values (1/2) are good  -> good_when = 'low'
+        # negative  -> agreement is bad   -> high values (4/5) are good -> good_when = 'high'
+        if polarity.startswith("pos"):
+            good_when = "low"
+        elif polarity.startswith("neg"):
+            good_when = "high"
+        else:
+            unresolved_samples.append({"qn": qnum, "cat": cat_disp, "polarity": polarity, "reason":"unknown-polarity"})
+            continue
+
+        field = resolve_field_from_question(qnum, survey_headers)
+        if not field:
+            unresolved_samples.append({"qn": qnum, "cat": cat_disp, "polarity": polarity, "reason":"no-matching-survey-column"})
+            continue
+
+        resolved.append({
+            "question_number": qnum,
+            "field": field,
+            "category_key": cat_key,
+            "good_when": good_when,
+            "special_interest": special,
+        })
+
+    log("MAPPING_FIELDS_RESOLVED", {
+        "resolved": len(resolved),
+        "unresolved": len(unresolved_samples),
+        "unresolved_sample": unresolved_samples[:10],
+    })
+    return resolved
+
+# =========================
+# Aggregation
+# =========================
 def compute_aggregates(
     survey_rows: List[Dict[str,str]],
     mapping: List[Dict[str,str]],
     function_col: str,
     level_col: str,
 ) -> tuple[Dict[str,float], Dict[str, Dict[str, List[Tuple[str,float]]]]]:
-    """
-    Returns:
-      topline_pct: {category_key -> pct_good}
-      breakdowns:  {category_key -> {"function":[(label,pct_good)...], "level":[(label,pct_good)...]}}
-    """
-    # counters
     overall = {cat: {"good":0, "total":0} for cat in CATEGORY_ORDER}
-    by_func: Dict[str, Dict[str, Dict[str,int]]] = {cat:{} for cat in CATEGORY_ORDER}  # cat -> func -> {good,total}
-    by_level: Dict[str, Dict[str, Dict[str,int]]] = {cat:{} for cat in CATEGORY_ORDER} # cat -> lvl  -> {good,total}
+    by_func: Dict[str, Dict[str, Dict[str,int]]] = {cat:{} for cat in CATEGORY_ORDER}
+    by_level: Dict[str, Dict[str, Dict[str,int]]] = {cat:{} for cat in CATEGORY_ORDER}
 
-    # iterate rows
     for row in survey_rows:
         func = row.get(function_col) or row.get("Business Function") or "Unknown"
         lvl  = row.get(level_col) or row.get("Job Level") or row.get("Title") or "Unknown"
@@ -211,12 +250,15 @@ def compute_aggregates(
         for m in mapping:
             field = m["field"]
             cat   = m["category_key"]
-            pol   = m["good_when"]  # 'high' or 'low'
+            gw    = m["good_when"]  # 'low' or 'high'
             val   = val_to_num(row.get(field))
-            if val is None:
+            if val is None:  # skip blanks/non-numeric
                 continue
-            # good if high (4/5) or low (1/2)
-            is_good = (val >= 4.0) if pol == "high" else (val <= 2.0)
+
+            # Based on your scale: 1..5 (1=Strongly Agree)
+            # good_when='low'  -> 1 or 2 are good
+            # good_when='high' -> 4 or 5 are good
+            is_good = (val <= 2.0) if gw == "low" else (val >= 4.0)
 
             overall[cat]["total"] += 1
             overall[cat]["good"]  += 1 if is_good else 0
@@ -228,26 +270,24 @@ def compute_aggregates(
             lslot["total"] += 1; lslot["good"] += 1 if is_good else 0
 
     topline_pct = {
-        cat: ( (overall[cat]["good"] / overall[cat]["total"])*100.0 if overall[cat]["total"]>0 else 0.0 )
-        for cat in CATEGORY_ORDER
+        cat: ((c["good"]/c["total"])*100.0 if c["total"]>0 else 0.0)
+        for cat, c in overall.items()
     }
 
     def pct_list(d: Dict[str, Dict[str,int]]) -> List[Tuple[str,float]]:
-        items = []
+        out: List[Tuple[str,float]] = []
         for label, c in d.items():
             if c["total"]>0:
-                items.append((label, (c["good"]/c["total"])*100.0))
-        # Sort by label for consistent output
-        items.sort(key=lambda x: x[0].lower())
-        return items
+                out.append((label, (c["good"]/c["total"])*100.0))
+        out.sort(key=lambda x: x[0].lower())
+        return out
 
-    breakdowns: Dict[str, Dict[str, List[Tuple[str,float]]]] = {}
-    for cat in CATEGORY_ORDER:
-        breakdowns[cat] = {
-            "function": pct_list(by_func[cat]),
-            "level":    pct_list(by_level[cat]),
-        }
-    log("AGG_DONE", {"topline_nonzero": {k:round(v,1) for k,v in topline_pct.items() if v>0}})
+    breakdowns: Dict[str, Dict[str, List[Tuple[str,float]]]] = {
+        cat: {"function": pct_list(by_func[cat]), "level": pct_list(by_level[cat])}
+        for cat in CATEGORY_ORDER
+    }
+
+    log("AGG_DONE", {"topline_nonzero": {k: round(v,1) for k,v in topline_pct.items() if v>0}})
     return topline_pct, breakdowns
 
 # =========================
@@ -257,36 +297,24 @@ def save_single_value_bar(category_key: str, label: str, score_pct: float, out_p
     color = CATEGORY_COLOR_MAP.get(category_key, CAT_PALETTE[0])
     fig, ax = plt.subplots(figsize=(4, 2))
     ax.bar([label], [score_pct], color=[color])
-    ax.set_ylim(0, 100)
-    ax.set_ylabel("% positive")
-    ax.set_title(f"{label} — {score_pct:.0f}%")
-    for s in ("top", "right"):
-        ax.spines[s].set_visible(False)
-    fig.tight_layout()
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out_path, dpi=150)
-    plt.close(fig)
-    log("CHART_SAVED", {"type":"single", "category": label, "score_pct": round(score_pct,1), "file": str(out_path)})
+    ax.set_ylim(0, 100); ax.set_ylabel("% positive"); ax.set_title(f"{label} — {score_pct:.0f}%")
+    for s in ("top","right"): ax.spines[s].set_visible(False)
+    fig.tight_layout(); out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=150); plt.close(fig)
+    log("CHART_SAVED", {"type":"single","category":label,"score_pct":round(score_pct,1),"file":str(out_path)})
 
 def save_breakdown_vertical(title: str, items: List[Tuple[str, float]], out_path: Path, mode: str):
-    if not items:
-        return
+    if not items: return
     labels, values = zip(*items)
     colors = [color_for_function(l) if mode=="function" else color_for_level(l) for l in labels]
-
     fig, ax = plt.subplots(figsize=(max(6.5, len(labels)*0.9), 4.2))
     ax.bar(list(range(len(labels))), list(values), color=colors)
-    ax.set_ylim(0, 100)
-    ax.set_ylabel("% positive")
-    ax.set_title(title)
+    ax.set_ylim(0, 100); ax.set_ylabel("% positive"); ax.set_title(title)
     ax.set_xticks(list(range(len(labels))), labels, rotation=20, ha="right")
-    for s in ("top", "right"):
-        ax.spines[s].set_visible(False)
-    fig.tight_layout()
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out_path, dpi=150)
-    plt.close(fig)
-    log("CHART_SAVED", {"type": f"by_{mode}", "title": title, "count": len(labels), "file": str(out_path)})
+    for s in ("top","right"): ax.spines[s].set_visible(False)
+    fig.tight_layout(); out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=150); plt.close(fig)
+    log("CHART_SAVED", {"type":f"by_{mode}","title":title,"count":len(labels),"file":str(out_path)})
 
 # =========================
 # Report generation
@@ -296,54 +324,45 @@ def generate_client_report(
     breakdown: Dict[str, Dict[str, List[Tuple[str, float]]]],
     out_path: Path,
 ) -> Path:
-    module_file = Path(inspect.getsourcefile(generate_client_report)).resolve()
-    st.caption(f"Running code from: `{module_file}`")
-
+    st.caption(f"Running code from: `{Path(inspect.getsourcefile(generate_client_report)).resolve()}`")
     tpl = get_template_path()
     if not tpl.exists():
         log("TEMPLATE_NOT_FOUND", {"attempted": str(tpl)})
-        raise FileNotFoundError(
-            f"Template not found at {tpl}. Place '{DEFAULT_TEMPLATE_FILENAME}' next to app.py "
-            f"or set CFASTR_TEMPLATE to an absolute path."
-        )
+        raise FileNotFoundError(f"Template not found at {tpl}. Place '{DEFAULT_TEMPLATE_FILENAME}' next to app.py "
+                                f"or set CFASTR_TEMPLATE to an absolute path.")
     log("TEMPLATE_OPEN", {"path": str(tpl)})
 
     out_path = out_path.resolve()
     chart_dir = out_path.parent / "charts"
 
-    # --- single-value bars (category-colored) ---
     singles_spec = [
-        ("collusion",           "Collusion",     topline_pct.get("collusion", 0.0),            "collusion_bar"),
-        ("feedback_receiving",  "Feedback",      topline_pct.get("feedback_receiving", 0.0),   "feedback_bar"),
-        ("accountability",      "Accountability",topline_pct.get("accountability", 0.0),       "accountability_bar"),
-        ("sensitivity",         "Sensitivity",   topline_pct.get("sensitivity", 0.0),          "sensitivity_bar"),
-        ("trust",               "Trust",         topline_pct.get("trust", 0.0),                "trust_bar"),
-        ("relationship_focus",  "Relationships", topline_pct.get("relationship_focus", 0.0),   "relationships_bar"),
+        ("collusion","Collusion", topline_pct.get("collusion",0.0), "collusion_bar"),
+        ("feedback_receiving","Feedback", topline_pct.get("feedback_receiving",0.0), "feedback_bar"),
+        ("accountability","Accountability", topline_pct.get("accountability",0.0), "accountability_bar"),
+        ("sensitivity","Sensitivity", topline_pct.get("sensitivity",0.0), "sensitivity_bar"),
+        ("trust","Trust", topline_pct.get("trust",0.0), "trust_bar"),
+        ("relationship_focus","Relationships", topline_pct.get("relationship_focus",0.0), "relationships_bar"),
     ]
-    base_context: Dict[str, Any] = {}
+    ctx: Dict[str, Any] = {}
     for cat_key, label, pct, bar_key in singles_spec:
         img = chart_dir / f"{bar_key}.png"
         save_single_value_bar(cat_key, label, float(pct), img)
-        base_context[bar_key] = str(img)
+        ctx[bar_key] = str(img)
 
-    # --- breakdown charts (vertical; categorical colors per label) ---
     for cat_key in CATEGORY_ORDER:
         bucket = breakdown.get(cat_key, {})
         if bucket.get("function"):
             imgf = chart_dir / f"{cat_key}_by_function_chart.png"
-            title = f"{cat_key.replace('_',' ').title()}: by Business Function"
-            save_breakdown_vertical(title, bucket["function"], imgf, mode="function")
-            base_context[f"{cat_key}_by_function_chart"] = str(imgf)
+            save_breakdown_vertical(f"{cat_key.replace('_',' ').title()}: by Business Function",
+                                    bucket["function"], imgf, mode="function")
+            ctx[f"{cat_key}_by_function_chart"] = str(imgf)
         if bucket.get("level"):
             imgl = chart_dir / f"{cat_key}_by_level_chart.png"
-            title = f"{cat_key.replace('_',' ').title()}: by Job Level"
-            save_breakdown_vertical(title, bucket["level"], imgl, mode="level")
-            base_context[f"{cat_key}_by_level_chart"] = str(imgl)
+            save_breakdown_vertical(f"{cat_key.replace('_',' ').title()}: by Job Level",
+                                    bucket["level"], imgl, mode="level")
+            ctx[f"{cat_key}_by_level_chart"] = str(imgl)
 
-    # load template
     doc = DocxTemplate(str(tpl))
-
-    # Try logging unresolved placeholders
     present = set()
     try:
         present = set(doc.get_undeclared_template_variables() or [])
@@ -351,30 +370,25 @@ def generate_client_report(
     except Exception:
         pass
 
-    # Expose topline % (optional if template uses them)
-    for k, v in topline_pct.items():
-        base_context[f"{k}_pct"] = round(float(v), 1)
+    # also expose topline numeric % if the template uses them
+    for k, v in topline_pct.items(): ctx[f"{k}_pct"] = round(float(v),1)
 
-    # Convert image paths to InlineImage
-    final_context: Dict[str, Any] = {}
-    for k, v in base_context.items():
-        if isinstance(v, str) and v.lower().endswith((".png", ".jpg", ".jpeg")):
-            width = 120 if "by_" in k else 90
-            final_context[k] = InlineImage(doc, v, width=Mm(width))
+    fin: Dict[str, Any] = {}
+    for k, v in ctx.items():
+        if isinstance(v, str) and v.lower().endswith((".png",".jpg",".jpeg")):
+            fin[k] = InlineImage(doc, v, width=Mm(120 if "by_" in k else 90))
         else:
-            final_context[k] = v
+            fin[k] = v
 
-    # Log unresolved after we filled what we can
     try:
-        unresolved = sorted([v for v in present if v not in final_context])
+        unresolved = sorted([v for v in present if v not in fin])
         log("UNRESOLVED_PLACEHOLDERS", {"count": len(unresolved), "vars": unresolved})
     except Exception:
         pass
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     log("RENDER_BEGIN", {"template": str(tpl), "output": str(out_path)})
-    doc.render(final_context)
-    doc.save(str(out_path))
+    doc.render(fin); doc.save(str(out_path))
     log("REPORT_WRITTEN", {"output": str(out_path)})
     return out_path
 
@@ -382,16 +396,18 @@ def generate_client_report(
 # Streamlit UI
 # =========================
 st.set_page_config(page_title="C FASTR Diagnostics", layout="centered")
-st.title("C FASTR Diagnostics — Survey-driven charts (vertical, categorical colors)")
+st.title("C FASTR — Survey-driven charts (vertical; categorical colors)")
 
 with st.expander("How this works", expanded=True):
     st.markdown("""
-- Reads **CFastR_Survey_Data.csv** (one row per respondent) and **CFASTR_Category_Mapping_V1.csv** (which question maps to which category, and whether high/low is "good").
-- Computes **good %** as:
-  - If `good_when = high`: answers **4 or 5** count as good
-  - If `good_when = low`:  answers **1 or 2** count as good
-- Aggregates **top-line** and **breakdowns** by **Business Function** and **Job Level** (no risk colors; colors are categorical).
-- Requires your Word template to include placeholders like `{{ collusion_by_function_chart }}` etc.
+- Reads **CFastR_Survey_Data.csv** (one row per respondent) and **CFASTR_Category_Mapping_V1.csv**.
+- **Mapping columns (exact names):**
+  - `Question Number` — your question ID (e.g., `Q12`, `12`, or `Q12 – text`)
+  - `C FASTR Category` — Collusion / Feedback, Receiving / Feedback, Giving / Accountability / Sensitivity / Trust / Relationship Focus
+  - `Polarity` — `positive` (1/2 = good) or `negative` (4/5 = good) given your 1..5 scale (1=Strongly Agree).
+  - `Special Interest` — optional, logged; not used yet.
+- The app resolves each `Question Number` to a **survey column header** (exact match, `Q<num>`, `Question <num>`, or prefix like `Q12 - ...`).
+- Generates **category single bars** and **vertical breakdown charts** (by Function & by Level) with label-consistent colors.
 """)
 
 with st.form("inputs"):
@@ -402,43 +418,18 @@ with st.form("inputs"):
     with colB:
         function_col = st.text_input("Function column name", value=DEFAULT_FUNCTION_COL)
         level_col    = st.text_input("Level column name", value=DEFAULT_LEVEL_COL)
-
     out_name = st.text_input("Output filename", "cfastr_report.docx")
     submitted = st.form_submit_button("Generate Report")
 
 if submitted:
     try:
-        # Load data
-        survey_rows  = load_survey(get_repo_path(survey_path))
-        mapping_rows = load_mapping(get_repo_path(mapping_path))
+        survey_rows  = load_survey(here(survey_path))
+        headers = list(survey_rows[0].keys()) if survey_rows else []
+        mapping_rows = load_and_resolve_mapping(here(mapping_path), headers)
 
-        # Compute aggregates
-        topline_pct, breakdowns = compute_aggregates(
-            survey_rows, mapping_rows, function_col=function_col, level_col=level_col
-        )
-
-        # Show path we expect BEFORE generation
-        expected_tpl = get_template_path()
-        st.caption(f"Expected template location: `{expected_tpl}`")
-
-        # Build report
-        out_file = Path("out") / out_name
-        result = generate_client_report(topline_pct, breakdowns, out_file)
-        st.success(f"Report written to: {result}")
-        st.code(str(result), language="bash")
-
-        # Tail logs
-        try:
-            with LOGFILE.open("r", encoding="utf-8") as f:
-                lines = f.readlines()[-60:]
-            st.text_area("Recent log output", value="".join(lines), height=320)
-        except Exception:
-            st.info("No log file yet.")
-    except Exception as e:
-        st.error(str(e))
-        try:
-            with LOGFILE.open("r", encoding="utf-8") as f:
-                lines = f.readlines()[-60:]
-            st.text_area("Recent log output", value="".join(lines), height=320)
-        except Exception:
-            st.info("No log file yet.")
+        # Fast feedback if nothing mapped
+        if not mapping_rows:
+            st.error("No mapping rows resolved. Check 'Question Number', 'C FASTR Category', and 'Polarity' values.")
+            st.info("See Recent log output below for a sample of unresolved rows.")
+        else:
+            st.success(f"{
