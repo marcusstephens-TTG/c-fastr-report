@@ -247,5 +247,15 @@ def main():
         doc.save(output_docx)
         st.success(f"Report generated: {output_docx}")
 
+        # ADD THIS: Download button for the generated report
+        with open(output_docx, "rb") as f:
+            docx_bytes = f.read()
+        st.download_button(
+            label="⬇️ Download Culture Health Report (Word DOCX)",
+            data=docx_bytes,
+            file_name=output_docx,
+            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        )
+
 if __name__ == "__main__":
     main()
