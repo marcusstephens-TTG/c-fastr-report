@@ -4,12 +4,14 @@ from docx import Document
 from docx.shared import Inches
 import matplotlib.pyplot as plt
 import os
+from datetime import datetime
+import pytz
 
 # File paths
 mapping_file = "CFASTR_Category_Mapping_V1.csv"
 survey_file = "CFastR_Survey_Data.csv"
 thresholds_file = "category_copy_thresholds.csv"
-output_docx = "Culture_Health_Report.docx"
+# output_docx will be set dynamically
 
 @st.cache_data
 def load_data():
@@ -107,15 +109,28 @@ def main():
     st.title("C FASTR Report Generator")
 
     # --- User Input UI ---
-    company_name = st.text_input("Company Name")
+    consultant_name = st.text_input("Consultant Name *")
+    company_name = st.text_input("Company Name *")
     client_contact = st.text_input("Client Contact")
-    report_date = st.date_input("Report Date")
+    # Use Atlanta timezone for the date
+    atlanta_tz = pytz.timezone('America/New_York')
+    now_atlanta = datetime.now(atlanta_tz)
+    report_date = st.date_input("Report Date", value=now_atlanta.date())
     confidentiality_notice = st.text_area("Confidentiality Notice")
     exec_engagement_summary = st.text_area("Engagement Summary")
     exec_results_summary = st.text_area("Results Summary")
     exec_suggested_actions = st.text_area("Suggested Actions")
 
+    # Validation for required fields
+    required_fields = [consultant_name, company_name]
+    missing_fields = [f for f, v in zip(["Consultant Name", "Company Name"], required_fields) if not v.strip()]
+    if missing_fields:
+        st.warning(f"Required fields missing: {', '.join(missing_fields)}")
+
     if st.button("Generate Report"):
+        if missing_fields:
+            st.error("Please fill out all required fields before generating the report.")
+            st.stop()
         mapping, survey, thresholds = load_data()
         cwd = os.getcwd()
         print(f"[DEBUG] Current working directory: {cwd}")
@@ -156,7 +171,15 @@ def main():
         # Polarity mapping
         question_polarity = mapping.set_index("Question Number")["Polarity"].to_dict()
 
+        # Atlanta date for filename
+        atlanta_date_str = now_atlanta.strftime("%Y-%m-%d")
+        # Safe filename parts
+        safe_company = company_name.replace(" ", "_").replace(",", "")
+        safe_consultant = consultant_name.replace(" ", "_").replace(",", "")
+        output_docx = f"{safe_company}_CultureAssessment_{safe_consultant}_{atlanta_date_str}.docx"
+
         data = {
+            "consultant_name": consultant_name,
             "company_name": company_name,
             "client_contact": client_contact,
             "report_date": report_date.strftime("%Y-%m-%d") if hasattr(report_date, "strftime") else str(report_date),
@@ -174,6 +197,7 @@ def main():
         }
 
         placeholder_map = {
+            "{{ consultant_name }}": "consultant_name",
             "{{ title_company_name }}": "company_name",
             "{{ title_client_contact }}": "client_contact",
             "{{ title_date }}": "report_date",
@@ -247,7 +271,7 @@ def main():
         doc.save(output_docx)
         st.success(f"Report generated: {output_docx}")
 
-        # ADD THIS: Download button for the generated report
+        # Download button for the generated report
         with open(output_docx, "rb") as f:
             docx_bytes = f.read()
         st.download_button(
